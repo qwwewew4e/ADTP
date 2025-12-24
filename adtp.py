@@ -1,6 +1,5 @@
 """
-ADTP (Aboba Data Transfer Protocol) Core v1.0
-Исправленная версия с корректной работой padding
+ADTP (Aboba Data Transfer Protocol) Library
 """
 
 import struct
@@ -12,24 +11,22 @@ from enum import IntEnum
 
 
 # ============================================================================
-# 1. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# UTILITIES
 # ============================================================================
 
 def _xor_bytes(a: bytes, b: bytes) -> bytes:
-    """XOR двух байтовых строк"""
+    """XOR two byte strings"""
     if len(a) != len(b):
-        # Расширяем более короткую строку
+        # Extend shorter string
         if len(a) < len(b):
-            a = a * (len(b) // len(a) + 1)
-            a = a[:len(b)]
+            a = (a * ((len(b) // len(a)) + 1))[:len(b)]
         else:
-            b = b * (len(a) // len(b) + 1)
-            b = b[:len(a)]
+            b = (b * ((len(a) // len(b)) + 1))[:len(a)]
     return bytes(x ^ y for x, y in zip(a, b))
 
 
 def _rotate_left(data: bytes, shift: int) -> bytes:
-    """Циклический сдвиг влево для каждого байта"""
+    """Rotate left each byte"""
     shift = shift % 8
     if shift == 0:
         return data
@@ -41,7 +38,7 @@ def _rotate_left(data: bytes, shift: int) -> bytes:
 
 
 def _rotate_right(data: bytes, shift: int) -> bytes:
-    """Циклический сдвиг вправо для каждого байта"""
+    """Rotate right each byte"""
     shift = shift % 8
     if shift == 0:
         return data
@@ -53,7 +50,7 @@ def _rotate_right(data: bytes, shift: int) -> bytes:
 
 
 def _calculate_crc32(data: bytes) -> int:
-    """Вычисление CRC32"""
+    """Calculate CRC32"""
     crc = 0xFFFFFFFF
     for byte in data:
         crc ^= byte << 24
@@ -69,7 +66,6 @@ def _calculate_crc32(data: bytes) -> int:
 def _pkcs7_pad(data: bytes, block_size: int = 16) -> bytes:
     """PKCS7 padding"""
     if not data:
-        # Для пустых данных добавляем полный блок padding
         return bytes([block_size] * block_size)
     
     padding_len = block_size - (len(data) % block_size)
@@ -80,42 +76,34 @@ def _pkcs7_pad(data: bytes, block_size: int = 16) -> bytes:
 
 
 def _pkcs7_unpad(data: bytes) -> bytes:
-    """Удаление PKCS7 padding"""
-    if not data:
+    """Remove PKCS7 padding"""
+    if not data or len(data) < 1:
         return b""
     
     padding_len = data[-1]
     
-    # Проверяем что padding_len в допустимом диапазоне
     if padding_len < 1 or padding_len > len(data):
-        # Если padding некорректен, возвращаем данные как есть
-        # (возможно это уже данные без padding)
         return data
     
-    # Проверяем что все байты padding одинаковы и равны padding_len
     for i in range(1, padding_len + 1):
         if data[-i] != padding_len:
-            # Если padding некорректен, возвращаем данные как есть
             return data
     
     return data[:-padding_len]
 
 
 # ============================================================================
-# 2. СИСТЕМА КЛЮЧЕЙ
+# KEY MANAGEMENT
 # ============================================================================
 
 class ADTPKey:
-    """Управление ключами ADTP"""
+    """ADTP Key Management"""
     
     @staticmethod
     def generate() -> str:
         """
-        Генерация ADTP ключа (64 hex символа)
-        Формат: SHA256(random)[:32] + random(32 hex chars)
-        
-        Returns:
-            str: 64-символьный hex ключ
+        Generate ADTP key (64 hex chars)
+        Format: SHA256(random)[:32] + random(32 hex chars)
         """
         random_part = secrets.token_hex(16)
         checksum = hashlib.sha256(random_part.encode()).hexdigest()[:32]
@@ -124,13 +112,13 @@ class ADTPKey:
     @staticmethod
     def validate(key: str) -> bool:
         """
-        Проверка валидности ключа
+        Validate key
         
         Args:
-            key: Ключ для проверки
+            key: Key to validate
             
         Returns:
-            bool: True если ключ валиден
+            bool: True if key is valid
         """
         if len(key) != 64:
             return False
@@ -143,13 +131,13 @@ class ADTPKey:
     @staticmethod
     def derive_keys(master_key: str) -> Tuple[bytes, bytes, bytes]:
         """
-        Деривация трех подключа из мастер-ключа
+        Derive three subkeys from master key
         
         Args:
-            master_key: Основной ключ ADTP
+            master_key: Main ADTP key
             
         Returns:
-            Tuple[bytes, bytes, bytes]: K1, K2, K3 (каждый по 16 байт)
+            Tuple[bytes, bytes, bytes]: K1, K2, K3 (each 16 bytes)
         """
         random_part = master_key[32:].encode()
         base_key = hashlib.sha256(random_part).digest()
@@ -162,11 +150,11 @@ class ADTPKey:
 
 
 # ============================================================================
-# 3. АЛГОРИТМ ШИФРОВАНИЯ AHDE (ИСПРАВЛЕННЫЙ)
+# AHDE ENCRYPTION
 # ============================================================================
 
 class AHDE:
-    """Реализация алгоритма шифрования AHDE (исправленная)"""
+    """AHDE Encryption Algorithm - Correct Implementation"""
     
     BLOCK_SIZE = 16
     SALT_SIZE = 8
@@ -174,210 +162,208 @@ class AHDE:
     @staticmethod
     def encrypt(data: bytes, master_key: str) -> str:
         """
-        Шифрование данных по алгоритму AHDE
+        Encrypt data using AHDE algorithm
         
-        Args:
-            data: Данные для шифрования
-            master_key: ADTP ключ (64 hex символа)
-            
-        Returns:
-            str: Зашифрованные данные в HEX формате
-            
-        Raises:
-            ValueError: Если ключ невалиден
+        Process:
+        1. PKCS7 padding to 16 bytes
+        2. Generate salt (8 bytes)
+        3. For each 16-byte block:
+           A: XOR with K1
+           B: XOR with mask (K2 XOR salt)
+           C: Rotate left by shift bits
+           D: CBC chaining
+        4. Final XOR with K3
+        5. Output: salt + iv + ciphertext (HEX)
         """
         if not ADTPKey.validate(master_key):
             raise ValueError("Invalid ADTP key")
         
+        # Derive keys
         k1, k2, k3 = ADTPKey.derive_keys(master_key)
         
-        # 1. PKCS7 padding (ВАЖНО: всегда добавляем padding)
+        # 1. PKCS7 padding
         padded = _pkcs7_pad(data, AHDE.BLOCK_SIZE)
         
-        # 2. Генерация соли и IV
+        # 2. Generate salt and IV
         salt = secrets.token_bytes(AHDE.SALT_SIZE)
-        iv = secrets.token_bytes(16)
+        iv = secrets.token_bytes(AHDE.BLOCK_SIZE)
         
-        # 3. Подготовка маски (K2 XOR соль)
-        salt_expanded = (salt * 2)[:16]  # Повторяем соль для получения 16 байт
+        # 3. Prepare mask (K2 XOR expanded salt)
+        # Expand salt to 16 bytes by repeating
+        salt_expanded = (salt * 2)[:AHDE.BLOCK_SIZE]
         mask = _xor_bytes(k2, salt_expanded)
         
-        # 4. Шифрование блоков
+        # 4. Encrypt blocks with CBC
         cipher_blocks = []
         prev_cipher = iv
         
-        for i in range(0, len(padded), AHDE.BLOCK_SIZE):
-            block = padded[i:i + AHDE.BLOCK_SIZE]
+        for block_idx in range(0, len(padded), AHDE.BLOCK_SIZE):
+            block = padded[block_idx:block_idx + AHDE.BLOCK_SIZE]
             
-            # Этап A: Упрощенное "шифрование" (в реальности должен быть AES)
-            # Используем HMAC-SHA256 для имитации шифрования
-            h1 = hashlib.sha256(k1 + block).digest()[:16]
-            stage_a = _xor_bytes(block, h1)
+            # STAGE A: XOR with K1
+            stage_a = _xor_bytes(block, k1)
             
-            # Этап B: XOR маскирование
+            # STAGE B: XOR with mask
             stage_b = _xor_bytes(stage_a, mask)
             
-            # Этап C: Циклический сдвиг (1-7 бит)
-            shift = (k3[i % 16] % 7) + 1
-            stage_c = _rotate_left(stage_b, shift)
+            # STAGE C: Rotate left (1-7 bits based on K3)
+            shift_idx = (block_idx // AHDE.BLOCK_SIZE) % len(k3)
+            shift_amount = (k3[shift_idx] % 7) + 1  # 1-7 bits
+            stage_c = _rotate_left(stage_b, shift_amount)
             
-            # Этап D: CBC режим
+            # STAGE D: CBC mode
             stage_d = _xor_bytes(stage_c, prev_cipher)
             
             cipher_blocks.append(stage_d)
             prev_cipher = stage_d
         
-        # 5. Объединение блоков
+        # 5. Combine all cipher blocks
         ciphertext = b''.join(cipher_blocks)
         
-        # 6. Финальное перемешивание с K3
+        # 6. Final mixing with K3
         final_cipher = bytearray()
         for i, byte in enumerate(ciphertext):
-            final_cipher.append(byte ^ k3[i % 16])
+            final_cipher.append(byte ^ k3[i % len(k3)])
         
-        # 7. HEX вывод: соль + IV + шифротекст
+        # 7. Return salt + IV + ciphertext in HEX
         result = salt + iv + bytes(final_cipher)
         return result.hex()
     
     @staticmethod
     def decrypt(encrypted_hex: str, master_key: str) -> bytes:
         """
-        Расшифрование данных по алгоритму AHDE
+        Decrypt data using AHDE algorithm
         
-        Args:
-            encrypted_hex: Зашифрованные данные в HEX формате
-            master_key: ADTP ключ (64 hex символа)
-            
-        Returns:
-            bytes: Расшифрованные данные
-            
-        Raises:
-            ValueError: Если ключ невалиден или данные повреждены
+        Reverse process of encryption
         """
         if not ADTPKey.validate(master_key):
             raise ValueError("Invalid ADTP key")
         
         try:
+            # Convert from HEX
             encrypted_data = bytes.fromhex(encrypted_hex)
         except ValueError:
             raise ValueError("Invalid hex string")
         
-        # Проверка минимальной длины
-        min_length = AHDE.SALT_SIZE + 16 + AHDE.BLOCK_SIZE
+        # Check minimum length
+        min_length = AHDE.SALT_SIZE + AHDE.BLOCK_SIZE + AHDE.BLOCK_SIZE
         if len(encrypted_data) < min_length:
             raise ValueError("Encrypted data too short")
         
-        # Извлечение компонентов
+        # Extract components
         salt = encrypted_data[:AHDE.SALT_SIZE]
-        iv = encrypted_data[AHDE.SALT_SIZE:AHDE.SALT_SIZE + 16]
-        ciphertext = encrypted_data[AHDE.SALT_SIZE + 16:]
+        iv = encrypted_data[AHDE.SALT_SIZE:AHDE.SALT_SIZE + AHDE.BLOCK_SIZE]
+        ciphertext = encrypted_data[AHDE.SALT_SIZE + AHDE.BLOCK_SIZE:]
         
-        # Проверка что ciphertext кратен BLOCK_SIZE
+        # Verify ciphertext length is multiple of block size
         if len(ciphertext) % AHDE.BLOCK_SIZE != 0:
             raise ValueError("Ciphertext length not multiple of block size")
         
+        # Derive keys
         k1, k2, k3 = ADTPKey.derive_keys(master_key)
         
-        # 1. Отмена финального перемешивания
-        cipher_unmixed = bytearray()
-        for i, byte in enumerate(ciphertext):
-            cipher_unmixed.append(byte ^ k3[i % 16])
-        ciphertext = bytes(cipher_unmixed)
-        
-        # 2. Подготовка маски
-        salt_expanded = (salt * 2)[:16]
+        # 1. Prepare mask (must be same as encryption)
+        salt_expanded = (salt * 2)[:AHDE.BLOCK_SIZE]
         mask = _xor_bytes(k2, salt_expanded)
         
-        # 3. Расшифрование блоков
+        # 2. Remove final mixing with K3
+        cipher_unmixed = bytearray()
+        for i, byte in enumerate(ciphertext):
+            cipher_unmixed.append(byte ^ k3[i % len(k3)])
+        ciphertext = bytes(cipher_unmixed)
+        
+        # 3. Decrypt blocks in reverse
         blocks = []
         prev_cipher = iv
         
-        for i in range(0, len(ciphertext), AHDE.BLOCK_SIZE):
-            block = ciphertext[i:i + AHDE.BLOCK_SIZE]
+        for block_idx in range(0, len(ciphertext), AHDE.BLOCK_SIZE):
+            block = ciphertext[block_idx:block_idx + AHDE.BLOCK_SIZE]
             
-            # Обратный Этап D: CBC
-            stage_d = _xor_bytes(block, prev_cipher)
+            # REVERSE STAGE D: CBC
+            stage_c = _xor_bytes(block, prev_cipher)
             
-            # Обратный Этап C: Сдвиг вправо
-            shift = (k3[i % 16] % 7) + 1
-            stage_c = _rotate_right(stage_d, shift)
+            # REVERSE STAGE C: Rotate right
+            shift_idx = (block_idx // AHDE.BLOCK_SIZE) % len(k3)
+            shift_amount = (k3[shift_idx] % 7) + 1
+            stage_b = _rotate_right(stage_c, shift_amount)
             
-            # Обратный Этап B: XOR маскирование
-            stage_b = _xor_bytes(stage_c, mask)
+            # REVERSE STAGE B: XOR with mask
+            stage_a = _xor_bytes(stage_b, mask)
             
-            # Обратный Этап A
-            h1 = hashlib.sha256(k1 + stage_b).digest()[:16]
-            stage_a = _xor_bytes(stage_b, h1)
+            # REVERSE STAGE A: XOR with K1
+            original_block = _xor_bytes(stage_a, k1)
             
-            blocks.append(stage_a)
+            blocks.append(original_block)
             prev_cipher = block
         
-        # 4. Объединение блоков
+        # 4. Combine blocks and remove padding
         decrypted = b''.join(blocks)
-        
-        # 5. Удаление PKCS7 padding
-        # Используем безопасный unpadding
-        try:
-            return _pkcs7_unpad(decrypted)
-        except Exception as e:
-            raise ValueError(f"Padding error: {e}")
+        return _pkcs7_unpad(decrypted)
     
     @staticmethod
     def test() -> bool:
-        """
-        Тестирование шифрования/расшифрования
+        """Test AHDE encryption/decryption"""
+        print("Testing AHDE encryption...")
         
-        Returns:
-            bool: True если тест пройден
-        """
-        try:
-            key = ADTPKey.generate()
-            
-            test_cases = [
-                b"",  # Пустые данные
-                b"A",  # 1 байт
-                b"Hello, ADTP!",  # 12 байт
-                b"This is a longer test message for ADTP encryption algorithm.",  # 64 байта
-                b"X" * 100,  # 100 байт
-                b"Y" * 255,  # 255 байт
-            ]
-            
-            for i, test_data in enumerate(test_cases):
-                encrypted = AHDE.encrypt(test_data, key)
+        key = ADTPKey.generate()
+        print(f"Test key: {key[:32]}...")
+        
+        test_cases = [
+            (b"", "Empty data"),
+            (b"A", "Single byte"),
+            (b"Hello, ADTP!", "Short text"),
+            (b"This is a test message", "Medium text"),
+            (b"!@#$%^&*()", "Special chars"),
+            (secrets.token_bytes(16), "16 random bytes"),
+            (secrets.token_bytes(100), "100 random bytes"),
+        ]
+        
+        all_passed = True
+        
+        for data, description in test_cases:
+            try:
+                print(f"\n{description} ({len(data)} bytes):")
+                
+                encrypted = AHDE.encrypt(data, key)
+                print(f"  Encrypted: {len(encrypted)} hex chars")
+                
                 decrypted = AHDE.decrypt(encrypted, key)
                 
-                if test_data != decrypted:
-                    print(f"Test {i} failed:")
-                    print(f"  Original: {test_data[:50]}...")
-                    print(f"  Decrypted: {decrypted[:50]}...")
-                    return False
-            
-            print("All AHDE tests passed!")
-            return True
-            
-        except Exception as e:
-            print(f"AHDE test failed with error: {e}")
-            return False
+                if data == decrypted:
+                    print(f"  ✓ PASSED")
+                else:
+                    print(f"  ✗ FAILED")
+                    print(f"    Original: {data[:32]}..." if len(data) > 32 else f"    Original: {data}")
+                    print(f"    Decrypted: {decrypted[:32]}..." if len(decrypted) > 32 else f"    Decrypted: {decrypted}")
+                    all_passed = False
+                    
+            except Exception as e:
+                print(f"  ✗ ERROR: {e}")
+                all_passed = False
+        
+        if all_passed:
+            print("\n✅ All AHDE tests passed!")
+        else:
+            print("\n❌ Some AHDE tests failed")
+        
+        return all_passed
 
 
 # ============================================================================
-# 4. КОМАНДЫ ПРОТОКОЛА
+# PROTOCOL COMMANDS
 # ============================================================================
 
 class ADTPCommand(IntEnum):
-    """Команды протокола ADTP"""
-    # Управление соединением
+    """ADTP Protocol Commands"""
     HELLO = 0x01
     PING = 0x02
     PONG = 0x03
     DISCONNECT = 0x04
     
-    # Статусы
     OK = 0x10
     ERROR = 0x11
     UNAUTHORIZED = 0x12
     
-    # Файловые операции
     FILE_LIST = 0x20
     FILE_UPLOAD_START = 0x21
     FILE_UPLOAD_CHUNK = 0x22
@@ -388,226 +374,242 @@ class ADTPCommand(IntEnum):
     FILE_DELETE = 0x27
     FILE_INFO = 0x28
     
-    # Системные
     SYSTEM_INFO = 0x30
     CONFIG_GET = 0x31
     CONFIG_SET = 0x32
     
-    # Пользовательские (для расширения)
     CUSTOM_1 = 0x40
     CUSTOM_2 = 0x41
     CUSTOM_3 = 0x42
-    CUSTOM_4 = 0x43
-    CUSTOM_5 = 0x44
 
 
 # ============================================================================
-# 5. ЯДРО ПРОТОКОЛА ADTP (ИСПРАВЛЕННОЕ)
+# ADTP PROTOCOL
 # ============================================================================
 
 class ADTPProtocol:
-    """Ядро протокола ADTP - создание и разбор пакетов"""
+    """ADTP Protocol Core"""
     
-    # Формат заголовка пакета (big-endian):
-    # version(1) | command(1) | sequence(4) | timestamp(8) | data_len(4) | crc32(4)
-    HEADER_FORMAT = ">BBQII"
+    HEADER_FORMAT = ">BBQII"  # version(1) | command(1) | sequence(4) | timestamp(8) | data_len(4) | crc32(4)
     HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
     
     def __init__(self, key: str):
         """
-        Инициализация протокола
+        Initialize protocol
         
         Args:
-            key: ADTP ключ (64 hex символа)
-            
-        Raises:
-            ValueError: Если ключ невалиден
+            key: ADTP key (64 hex chars)
         """
         if not ADTPKey.validate(key):
-            raise ValueError("Invalid ADTP key. Key must be 64 hex chars")
+            raise ValueError("Invalid ADTP key")
         
         self.key = key
         self.sequence = 0
     
     def create_packet(self, command: Union[int, ADTPCommand], data: bytes = b"") -> bytes:
         """
-        Создание пакета ADTP
+        Create ADTP packet
         
         Args:
-            command: Код команды или ADTPCommand
-            data: Данные для отправки (будут зашифрованы)
+            command: Command code or ADTPCommand
+            data: Data to send (will be encrypted)
             
         Returns:
-            bytes: Готовый пакет для отправки
+            bytes: Packet ready to send
         """
         self.sequence += 1
         
-        # Конвертация команды в int если нужно
         if isinstance(command, ADTPCommand):
             command = command.value
         
-        # Шифрование данных
+        # Encrypt data
         encrypted_data = b""
         if data:
             try:
                 encrypted_hex = AHDE.encrypt(data, self.key)
                 encrypted_data = encrypted_hex.encode('utf-8')
             except Exception as e:
-                print(f"Warning: Encryption failed, sending plaintext: {e}")
+                # Fallback to plaintext if encryption fails
+                print(f"Warning: Encryption failed, using plaintext: {e}")
                 encrypted_data = data
-        else:
-            # Даже для пустых данных создаем пакет
-            encrypted_data = b""
         
-        # Формирование заголовка
-        timestamp = int(time.time() * 1000)  # Миллисекунды
+        # Create header
+        timestamp = int(time.time() * 1000)
         data_len = len(encrypted_data)
         crc = _calculate_crc32(encrypted_data)
         
         header = struct.pack(
             self.HEADER_FORMAT,
-            0x01,           # Версия протокола
-            command,        # Код команды
-            timestamp,      # Временная метка
-            data_len,       # Длина данных
-            crc             # Контрольная сумма
+            0x01,           # Protocol version
+            command,        # Command code
+            timestamp,      # Timestamp (ms)
+            data_len,       # Data length
+            crc             # CRC32 checksum
         )
         
-        # Формирование полного пакета
-        packet = header + encrypted_data
-        
-        return packet
+        return header + encrypted_data
     
     def parse_packet(self, packet: bytes) -> Dict[str, Any]:
         """
-        Разбор пакета ADTP
+        Parse ADTP packet
         
         Args:
-            packet: Полученный пакет
+            packet: Received packet
             
         Returns:
-            Dict: Разобранный пакет с полями:
-                - version (int): версия протокола
-                - command (int): код команды
-                - sequence (int): порядковый номер
-                - timestamp (int): временная метка
-                - data_len (int): длина данных
-                - crc (int): контрольная сумма
-                - data (bytes): расшифрованные данные
-                - raw_data (bytes): зашифрованные данные
-                
+            Dict: Parsed packet with fields
+            
         Raises:
-            ValueError: Если пакет поврежден или невалиден
+            ValueError: If packet is invalid
         """
-        # Проверка минимальной длины
         if len(packet) < self.HEADER_SIZE:
-            raise ValueError(f"Packet too short: {len(packet)} bytes, expected at least {self.HEADER_SIZE}")
+            raise ValueError(f"Packet too short: {len(packet)} bytes")
         
-        # Разбор заголовка
-        header = packet[:self.HEADER_SIZE]
         try:
+            # Parse header
+            header = packet[:self.HEADER_SIZE]
             version, command, timestamp, data_len, crc = struct.unpack(
                 self.HEADER_FORMAT, header
             )
+            
+            if version != 0x01:
+                raise ValueError(f"Unsupported protocol version: {version}")
+            
+            # Check data length
+            if len(packet) < self.HEADER_SIZE + data_len:
+                raise ValueError(f"Incomplete packet")
+            
+            # Extract encrypted data
+            encrypted_data = packet[self.HEADER_SIZE:self.HEADER_SIZE + data_len]
+            
+            # Verify CRC
+            calculated_crc = _calculate_crc32(encrypted_data)
+            if calculated_crc != crc:
+                raise ValueError(f"CRC mismatch: {calculated_crc:#010x} != {crc:#010x}")
+            
+            # Decrypt data
+            decrypted_data = b""
+            if encrypted_data:
+                try:
+                    # Try to decrypt as AHDE encrypted data
+                    encrypted_hex = encrypted_data.decode('utf-8')
+                    decrypted_data = AHDE.decrypt(encrypted_hex, self.key)
+                except (UnicodeDecodeError, ValueError):
+                    # If not UTF-8 or decryption fails, use raw data
+                    decrypted_data = encrypted_data
+                except Exception as e:
+                    # Other decryption errors
+                    decrypted_data = encrypted_data
+            
+            return {
+                'version': version,
+                'command': command,
+                'sequence': self.sequence,
+                'timestamp': timestamp,
+                'data_len': data_len,
+                'crc': crc,
+                'data': decrypted_data,
+                'raw_data': encrypted_data
+            }
+            
         except struct.error as e:
             raise ValueError(f"Invalid packet header: {e}")
-        
-        # Проверка версии
-        if version != 0x01:
-            raise ValueError(f"Unsupported protocol version: {version}")
-        
-        # Проверка длины данных
-        if len(packet) < self.HEADER_SIZE + data_len:
-            raise ValueError(f"Incomplete packet: expected {self.HEADER_SIZE + data_len} bytes, got {len(packet)}")
-        
-        # Извлечение данных
-        encrypted_data = packet[self.HEADER_SIZE:self.HEADER_SIZE + data_len]
-        
-        # Проверка контрольной суммы
-        calculated_crc = _calculate_crc32(encrypted_data)
-        if calculated_crc != crc:
-            raise ValueError(f"CRC mismatch: expected {crc:#010x}, got {calculated_crc:#010x}")
-        
-        # Расшифровка данных
-        decrypted_data = b""
-        if encrypted_data:
-            try:
-                # Пробуем расшифровать как HEX строку
-                encrypted_hex = encrypted_data.decode('utf-8')
-                decrypted = AHDE.decrypt(encrypted_hex, self.key)
-                decrypted_data = decrypted
-            except UnicodeDecodeError:
-                # Если не UTF-8, пробуем как сырые данные
-                decrypted_data = encrypted_data
-            except Exception as e:
-                # При ошибке расшифрования оставляем зашифрованные данные
-                decrypted_data = encrypted_data
-        
-        return {
-            'version': version,
-            'command': command,
-            'sequence': self.sequence,
-            'timestamp': timestamp,
-            'data_len': data_len,
-            'crc': crc,
-            'data': decrypted_data,
-            'raw_data': encrypted_data
-        }
     
     def get_sequence(self) -> int:
-        """Получение текущего порядкового номера"""
+        """Get current sequence number"""
         return self.sequence
     
     def reset_sequence(self):
-        """Сброс порядкового номера"""
+        """Reset sequence number"""
         self.sequence = 0
 
 
 # ============================================================================
-# 6. ТЕСТИРОВАНИЕ
+# SELF-TEST
 # ============================================================================
 
-if __name__ == "__main__":
-    print("=== Тестирование библиотеки ADTP ===")
-    print()
+def self_test():
+    """Run comprehensive self-test"""
+    print("=" * 60)
+    print("ADTP Library Self-Test")
+    print("=" * 60)
     
-    # Тест 1: Ключи
-    print("1. Тестирование ключей...")
-    key = ADTPKey.generate()
-    print(f"   Сгенерирован ключ: {key[:32]}...")
-    print(f"   Ключ валиден: {ADTPKey.validate(key)}")
-    print()
+    results = []
     
-    # Тест 2: Шифрование AHDE
-    print("2. Тестирование шифрования AHDE...")
-    if AHDE.test():
-        print("   ✓ AHDE работает корректно")
-    else:
-        print("   ✗ AHDE тест не пройден")
-    print()
-    
-    # Тест 3: Протокол
-    print("3. Тестирование протокола...")
+    # Test 1: Key system
+    print("\n1. Testing key system...")
     try:
+        key = ADTPKey.generate()
+        print(f"   Key generated: {key[:32]}...")
+        print(f"   Key valid: {ADTPKey.validate(key)}")
+        
+        # Test invalid keys
+        invalid_key = "invalid" * 10
+        print(f"   Invalid key rejected: {not ADTPKey.validate(invalid_key)}")
+        
+        results.append(("Key System", True))
+    except Exception as e:
+        print(f"   ✗ Error: {e}")
+        results.append(("Key System", False))
+    
+    # Test 2: AHDE encryption
+    print("\n2. Testing AHDE encryption...")
+    try:
+        ahde_passed = AHDE.test()
+        results.append(("AHDE Encryption", ahde_passed))
+    except Exception as e:
+        print(f"   ✗ Error: {e}")
+        results.append(("AHDE Encryption", False))
+    
+    # Test 3: Protocol
+    print("\n3. Testing protocol...")
+    try:
+        key = ADTPKey.generate()
         protocol = ADTPProtocol(key)
         
-        test_data = b"Hello, ADTP!"
-        packet = protocol.create_packet(ADTPCommand.HELLO, test_data)
+        # Test with empty data
+        packet1 = protocol.create_packet(ADTPCommand.HELLO, b"")
+        parsed1 = protocol.parse_packet(packet1)
+        print(f"   Empty packet: {len(packet1)} bytes")
         
-        print(f"   Создан пакет: {len(packet)} байт")
+        # Test with data
+        test_data = b"Test message"
+        packet2 = protocol.create_packet(ADTPCommand.PING, test_data)
+        parsed2 = protocol.parse_packet(packet2)
         
-        parsed = protocol.parse_packet(packet)
-        print(f"   Команда: {parsed['command']:#04x}")
-        print(f"   Sequence: {parsed['sequence']}")
-        print(f"   Данные: {parsed['data']}")
-        
-        if parsed['data'] == test_data:
-            print("   ✓ Протокол работает корректно")
+        if parsed2['data'] == test_data:
+            print(f"   Data packet: {len(packet2)} bytes, data matches")
+            results.append(("Protocol", True))
         else:
-            print("   ✗ Данные не совпадают")
+            print(f"   ✗ Data mismatch")
+            print(f"     Expected: {test_data}")
+            print(f"     Got: {parsed2['data']}")
+            results.append(("Protocol", False))
             
     except Exception as e:
-        print(f"   ✗ Ошибка протокола: {e}")
+        print(f"   ✗ Error: {e}")
+        results.append(("Protocol", False))
     
-    print()
-    print("=== Тестирование завершено ===")
+    # Summary
+    print("\n" + "=" * 60)
+    print("Test Results:")
+    print("-" * 60)
+    
+    all_passed = True
+    for test_name, passed in results:
+        status = "✓ PASSED" if passed else "✗ FAILED"
+        print(f"  {test_name:20} {status}")
+        if not passed:
+            all_passed = False
+    
+    print("-" * 60)
+    if all_passed:
+        print("✅ All tests passed!")
+    else:
+        print("❌ Some tests failed")
+    
+    return all_passed
+
+
+if __name__ == "__main__":
+    self_test()
